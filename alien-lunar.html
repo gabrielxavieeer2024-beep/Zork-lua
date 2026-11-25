@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Zork: Rumo à Terra</title>
+<style>
+:root{--bg:#0b0b1a;--fg:#f2f2ff;--card:#1b1b38;--ac:#5cff7a;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root{--bg:#0b0b1a;--fg:#f2f2ff;--card:#1b1b38}}
+*{box-sizing:border-box;-webkit-user-select:none;user-select:none;touch-action:manipulation}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif}
+#wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+#box{position:relative;width:min(100vw,calc(100vh*16/9));aspect-ratio:16/9}
+canvas{width:100%;height:100%;display:block;background:#000}
+#rot{display:none;position:fixed;inset:0;z-index:9;background:#0b0b1a;align-items:center;justify-content:center;text-align:center;font-size:20px;padding:30px}
+@media (orientation:portrait){#rot{display:flex}}
+#ov{position:absolute;inset:0;z-index:5;background:rgba(5,5,20,.9);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:18px;gap:10px;overflow:auto}
+#ov h1{margin:0;color:var(--ac);font-size:clamp(18px,6vh,32px)}
+#ov p{margin:0;max-width:520px;line-height:1.4;font-size:clamp(11px,3.2vh,16px)}
+button{background:var(--ac);color:#062;border:0;border-radius:10px;padding:12px 22px;font-size:17px;font-weight:700}
+button.s{background:var(--card);color:var(--fg)}
+.pg{position:absolute;bottom:4%;display:flex;gap:12px;z-index:3}
+#gl{left:3%}#gr{right:3%}
+.pg button{width:clamp(54px,17vh,84px);height:clamp(54px,17vh,84px);padding:0;border-radius:50%;font-size:clamp(18px,6vh,30px);background:rgba(27,27,56,.65);color:#fff;border:2px solid rgba(255,255,255,.35)}
+.pg button:active{background:rgba(92,255,122,.6)}
+#bf{background:rgba(255,90,40,.65)!important}
+</style></head><body>
+<div id="rot">📱↻<br>Gire o celular para o modo horizontal (deitado) para jogar</div>
+<div id="wrap"><div id="box">
+<canvas id="c" width="800" height="450"></canvas>
+<div id="ov"></div>
+<div class="pg" id="gl"><button id="bl">◀</button><button id="br">▶</button></div>
+<div class="pg" id="gr"><button id="bj">⬆</button><button id="bf">🔥</button></div>
+</div></div>
+<script>
+const cv=document.getElementById('c'),g=cv.getContext('2d'),ov=document.getElementById('ov');
+const W=800,H=450,T=40,DELAY=2000;
+const WORLDS=[
+ {n:'MARTE',sky:['#3a0d08','#c4552b'],gr:'#a8401f',top:'#e0703a',g:1500,j:-640,
+  s:'Zork, o gato alienígena verde da Lua, sonha em ver o planeta azul. Seu foguete velho só chega até Marte. Atravesse as 10 fases e junte combustível!'},
+ {n:'LUA',sky:['#02020c','#1d1d3a'],gr:'#6b6b78',top:'#c9c9d6',g:900,j:-530,
+  s:'De volta à Lua, seu lar! A gravidade é leve, mas os cães roxos guardam a base de lançamento. Passe pelas 10 fases e chegue ao foguete.'},
+ {n:'TERRA',sky:['#4aa8ff','#cdeaff'],gr:'#3b7d2a',top:'#58c23c',g:1800,j:-650,
+  s:'Você está perto! A Terra tem tudo que sempre sonhou, mas os cães roxos vieram atrás de você. Mais 10 fases até o seu novo lar.'}
+];
+const END='Zork pisou na Terra e sentiu a grama pela primeira vez. Mesmo com dois segundos de atraso, ele provou que quem não desiste sempre chega lá. FIM — obrigado por jogar!';
+let save=null;try{save=JSON.parse(localStorage.getItem('zork_save'))}catch(e){}
+function store(){try{localStorage.setItem('zork_save',JSON.stringify({w:wi,l:li}))}catch(e){}}
+let wi=0,li=0,state='menu',deaths=0;
+// ---- input com atraso de 2s ----
+const keys={l:0,r:0,j:0,f:0},queue=[];
+function cmd(k,v){queue.push({t:performance.now()+DELAY,k,v})}
+const map={ArrowLeft:'l',a:'l',ArrowRight:'r',d:'r',ArrowUp:'j',w:'j',' ':'j',f:'f',x:'f'};
+addEventListener('keydown',e=>{const k=map[e.key];if(k&&!e.repeat){cmd(k,1);e.preventDefault()}});
+addEventListener('keyup',e=>{const k=map[e.key];if(k)cmd(k,0)});
+[['bl','l'],['br','r'],['bj','j'],['bf','f']].forEach(([id,k])=>{const b=document.getElementById(id);
+ b.addEventListener('pointerdown',e=>{e.preventDefault();cmd(k,1)});
+ ['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,()=>cmd(k,0)))});
+// ---- fases ----
+function rng(s){return()=>(s=(s*16807)%2147483647)/2147483647}
+let P,plats,enemies,goal,camX,len,bul=[],cps=[],spawn={x:60,y:300};
+function shoot(){if(state=='play')bul.push({x:P.x+(P.dir>0?P.w:-10),y:P.y+16,w:10,h:6,vx:P.dir*480,life:1.3})}
+function build(){
+ const r=rng(wi*1000+li*37+11),d=wi*10+li;plats=[];enemies=[];
+ let x=0;const L=2200+d*60;
+ plats.push({x:0,y:360,w:420,h:90});x=420;
+ while(x<L){
+  const gap=80+Math.floor(r()*(14+d*0.9)/8)*8;x+=Math.min(gap,128);
+  const w=200+Math.floor(r()*260);
+  plats.push({x,y:360,w,h:90});
+  if(w>=240&&r()<0.35+d*0.015)enemies.push({x:x+w/2,y:360-30,w:30,h:30,vx:(r()<.5?-1:1)*(40+d),a:x+10,b:x+w-40});
+  if(r()<0.4)plats.push({x:x+40,y:270-r()*20,w:100,h:16});
+  x+=w;
+ }
+ plats.push({x,y:360,w:420,h:90});goal={x:x+300,y:300,w:40,h:60};len=x+420;
+ P={x:60,y:300,w:28,h:34,vx:0,vy:0,gnd:0,dir:1};camX=0;spawn={x:60,y:300};bul=[];
+ const gs=plats.filter(p=>p.h==90);cps=[1/3,2/3].map(f=>({x:gs[Math.floor(gs.length*f)].x+50,on:0}));
+}
+function die(){deaths++;P.x=spawn.x;P.y=spawn.y;P.vx=P.vy=0;keys.l=keys.r=keys.j=keys.f=0;queue.length=0;bul=[]}
+function hit(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
+function update(dt){
+ const now=performance.now(),Wd=WORLDS[wi];
+ while(queue.length&&queue[0].t<=now){const q=queue.shift();keys[q.k]=q.v;if(q.k=='f'&&q.v)shoot()}
+ P.vx=(keys.r-keys.l)*210;if(P.vx)P.dir=Math.sign(P.vx);
+ if(keys.j&&P.gnd){P.vy=Wd.j;P.gnd=0}
+ P.vy+=Wd.g*dt;
+ P.x+=P.vx*dt;if(P.x<0)P.x=0;
+ for(const p of plats)if(hit(P,p)){if(P.vx>0)P.x=p.x-P.w;else if(P.vx<0)P.x=p.x+p.w}
+ P.y+=P.vy*dt;P.gnd=0;
+ for(const p of plats)if(hit(P,p)){if(P.vy>0){P.y=p.y-P.h;P.gnd=1}else P.y=p.y+p.h;P.vy=0}
+ if(P.y>H+80)return die();
+ for(const e of enemies){if(!e.dead){e.x+=e.vx*dt;if(e.x<e.a||e.x>e.b)e.vx*=-1;
+  if(hit(P,e)){if(P.vy>0&&P.y+P.h-e.y<20){e.dead=1;P.vy=-380}else return die()}}}
+ for(const c of cps)if(!c.on&&P.x>c.x){c.on=1;spawn={x:c.x,y:300}}
+ for(const b of bul){b.x+=b.vx*dt;b.life-=dt;for(const e of enemies)if(!e.dead&&hit(b,e)){e.dead=1;b.life=0}for(const p of plats)if(hit(b,p))b.life=0}
+ bul=bul.filter(b=>b.life>0);
+ if(hit(P,goal))win();
+ camX=Math.max(0,Math.min(P.x-W/3,len-W));
+}
+function win(){
+ state='pause';li++;
+ if(li>=10){li=0;wi++;
+  if(wi>=3){wi=0;try{localStorage.removeItem('zork_save')}catch(e){}return panel('🌍 Você chegou!',END,[['Jogar de novo',()=>start(0,0)]])}
+  store();return panel('🚀 Mundo concluído!',WORLDS[wi].s,[['Entrar em '+WORLDS[wi].n,()=>start(wi,0)]])}
+ store();panel('✅ Fase concluída!','Progresso salvo automaticamente.',[['Próxima fase',()=>start(wi,li)]]);
+}
+function panel(h,p,btns){ov.style.display='flex';ov.innerHTML='<h1>'+h+'</h1><p>'+p+'</p>';
+ btns.forEach(([t,f,s])=>{const b=document.createElement('button');b.textContent=t;if(s)b.className='s';b.onclick=f;ov.appendChild(b)})}
+function start(w,l){wi=w;li=l;keys.l=keys.r=keys.j=keys.f=0;queue.length=0;build();ov.style.display='none';state='play';try{screen.orientation.lock('landscape').catch(()=>{})}catch(e){}}
+function menu(){state='menu';const b=[['Novo jogo',()=>intro(0)]];
+ if(save)b.unshift(['Continuar (Mundo '+(save.w+1)+' · Fase '+(save.l+1)+')',()=>start(save.w,save.l)]);
+ panel('👽 Zork: Rumo à Terra','Zork vive na Lua e sonha em ir para a Terra. Só tem um problema: seu corpo obedece <b>2 segundos depois</b> de cada comando. Planeje com antecedência! Pule nos cachorros roxos ou use o 🔥 fogo, e cuidado com os buracos.<br><br>Teclado: setas / A D W / Espaço e F (fogo). Cada fase tem 🚩 checkpoints. Gire o celular na horizontal.',b)}
+function intro(w){wi=w;panel('Mundo '+(w+1)+': '+WORLDS[w].n,WORLDS[w].s,[['Começar',()=>start(w,0)]])}
+// ---- desenho ----
+const stars=Array.from({length:60},(_,i)=>[(i*137)%W,(i*71)%250,(i%3)+1]);
+function draw(){
+ const Wd=WORLDS[wi],gr=g.createLinearGradient(0,0,0,H);gr.addColorStop(0,Wd.sky[0]);gr.addColorStop(1,Wd.sky[1]);
+ g.fillStyle=gr;g.fillRect(0,0,W,H);
+ if(wi<2){g.fillStyle='#fff';stars.forEach(s=>g.fillRect(s[0],s[1],s[2],s[2]))}
+ if(wi==1){g.fillStyle='#3a8be0';g.beginPath();g.arc(650,80,34,0,7);g.fill()}
+ if(wi==2){g.fillStyle='#fff';[[150,70],[420,50],[640,90]].forEach(([x,y])=>{g.beginPath();g.arc(x,y,24,0,7);g.arc(x+26,y+4,20,0,7);g.fill()})}
+ if(state=='menu'&&!P)return;
+ g.save();g.translate(-Math.round(camX),0);
+ for(const p of plats){g.fillStyle=Wd.gr;g.fillRect(p.x,p.y,p.w,p.h);g.fillStyle=Wd.top;g.fillRect(p.x,p.y,p.w,8)}
+ // foguete (meta)
+ g.fillStyle='#eee';g.fillRect(goal.x+8,goal.y,24,60);g.fillStyle='#e33';g.beginPath();g.moveTo(goal.x+8,goal.y);g.lineTo(goal.x+20,goal.y-18);g.lineTo(goal.x+32,goal.y);g.fill();
+ g.fillStyle='#39f';g.beginPath();g.arc(goal.x+20,goal.y+20,6,0,7);g.fill();
+ for(const c of cps){g.fillStyle='#ddd';g.fillRect(c.x,320,3,40);g.fillStyle=c.on?'#5cff7a':'#ff4466';g.fillRect(c.x+3,320,22,14)}
+ for(const e of enemies)if(!e.dead){const d=Math.sign(e.vx),hx=d>0?e.x+14:e.x-2;
+  g.fillStyle='#9b30ff';g.fillRect(e.x,e.y+10,30,20);g.fillRect(hx,e.y,18,16);g.fillRect(d>0?e.x-6:e.x+28,e.y+8,8,5);
+  g.fillStyle='#5a1a99';g.fillRect(hx+(d>0?0:12),e.y-1,6,12);g.fillRect(e.x+3,e.y+26,5,6);g.fillRect(e.x+22,e.y+26,5,6);
+  g.fillStyle='#fff';g.fillRect(hx+(d>0?8:3),e.y+4,6,6);g.fillStyle='#000';g.fillRect(hx+(d>0?11:4),e.y+6,3,3);g.fillRect(d>0?hx+15:hx,e.y+10,4,4)}
+ // Zork, gato alienígena
+ g.fillStyle='#39e84f';g.fillRect(P.x,P.y+12,P.w,P.h-12);g.fillRect(P.x-2,P.y,P.w+4,18);
+ g.beginPath();g.moveTo(P.x-2,P.y);g.lineTo(P.x+2,P.y-10);g.lineTo(P.x+9,P.y);g.moveTo(P.x+P.w-9,P.y);g.lineTo(P.x+P.w-2,P.y-10);g.lineTo(P.x+P.w+2,P.y);g.fill();
+ g.fillRect(P.dir>0?P.x-8:P.x+P.w,P.y+14,8,5);g.fillRect(P.dir>0?P.x-8:P.x+P.w,P.y+6,4,10);
+ g.fillStyle='#ff0';g.fillRect(P.x+3,P.y+5,8,8);g.fillRect(P.x+P.w-11,P.y+5,8,8);
+ g.fillStyle='#000';const o=P.dir>0?3:0;g.fillRect(P.x+5+o,P.y+5,2,8);g.fillRect(P.x+P.w-9+o,P.y+5,2,8);g.fillRect(P.x+12,P.y+14,4,2);
+ g.fillStyle='#ff7a1a';for(const b of bul)g.fillRect(b.x,b.y,b.w,b.h);
+ g.restore();
+ // HUD
+ g.fillStyle='#fff';g.font='bold 16px system-ui';g.fillText(Wd.n+' · Fase '+(li+1)+'/10   Mortes: '+deaths,12,24);
+ const pend=queue.length,n=performance.now();
+ g.fillText('⏳ Comandos na fila: '+pend,12,46);
+ if(pend){const f=1-(queue[0].t-n)/DELAY;g.fillStyle='#333';g.fillRect(12,54,120,8);g.fillStyle='#5cff7a';g.fillRect(12,54,120*Math.max(0,Math.min(1,f)),8)}
+}
+let last=performance.now();
+function loop(t){const dt=Math.min(.033,(t-last)/1000);last=t;if(state=='play')update(dt);draw();requestAnimationFrame(loop)}
+menu();requestAnimationFrame(loop);
+</script></body></html>
